@@ -53,7 +53,7 @@ El prototipo usa un **ESP32**, un **módulo HX711** y una **celda de carga**, co
    src/CDIO-3-WIFI.ino
 5. Conectar la ESP32 por USB.
 6. Compilar y cargar con → Upload.
-
+---
 ## ▶️ Ejecución
 
 1. Al encender, la ESP32 crea una red WiFi:
