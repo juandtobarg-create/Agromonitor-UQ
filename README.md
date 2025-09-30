@@ -57,15 +57,15 @@ El prototipo usa un **ESP32**, un **módulo HX711** y una **celda de carga**, co
 ## ▶️ Ejecución
 
 1. Al encender, la ESP32 crea una red WiFi:
-  -SSID: AgroMonitor-UQ
-  -Contraseña: 12345678
+  - SSID: AgroMonitor-UQ
+  - Contraseña: 12345678
 
 2. Conectarse a esa red desde un PC o celular.
 3. Abrir en el navegador:
     http://192.168.4.1
 
 4. En la interfaz web se puede:
-   -Definir tiempo de monitoreo.
-   -Escoger la unidad (kg, g, lb).
-   -Iniciar/Detener monitoreo.
-   -Descargar el archivo CSV.
+   - Definir tiempo de monitoreo.
+   - Escoger la unidad (kg, g, lb).
+   - Iniciar/Detener monitoreo.
+   - Descargar el archivo CSV.
