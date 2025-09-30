@@ -1,0 +1,191 @@
+#include <HX711.h>
+#include <WiFi.h>
+#include <WebServer.h>
+#include "SPIFFS.h"
+
+// Pines HX711
+#define HX_DT 19
+#define HX_SCK 18
+const float FACTOR_CALIBRACION = 210683.671875;
+
+HX711 scale;
+
+// WiFi AP
+const char* ssid = "AgroMonitor-UQ";
+const char* password = "12345678";
+
+WebServer server(80);
+
+// Estado monitoreo
+bool monitoring = false;
+unsigned long startMillis = 0;
+unsigned long lastSampleMillis = 0;
+unsigned long sampleIntervalMs = 1000; // 1s fijo
+unsigned long totalDurationMs = 0;
+
+float latestWeight = 0.0;
+unsigned long latestElapsedS = 0;
+int unitSel = 0; // 0=kg, 1=g, 2=lb
+
+const char* csvPath = "/data.csv";
+
+// ===== HTML =====
+const char index_html[] PROGMEM = R"rawliteral(
+<!DOCTYPE html><html>
+<head>
+  <meta charset="utf-8">
+  <title>AgroMonitor UQ</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <style>
+    body{font-family:Arial;margin:10px;}
+    .card{border:1px solid #ccc;padding:10px;margin-bottom:10px;border-radius:6px}
+    label{display:block;margin-top:6px}
+    input,select,button{padding:6px;margin-top:4px}
+  </style>
+</head>
+<body>
+  <h2>AgroMonitor UQ - Monitoreo de Peso</h2>
+
+  <div class="card">
+    <label>Tiempo de monitoreo (minutos):
+      <input id="duration" type="number" value="5">
+    </label>
+    <label>Unidad:
+      <select id="unit">
+        <option value="0">kg</option>
+        <option value="1">g</option>
+        <option value="2">lb</option>
+      </select>
+    </label>
+    <button onclick="start()">Iniciar</button>
+    <button onclick="stop()">Detener</button>
+    <a href="/download">Descargar CSV</a>
+  </div>
+
+  <div class="card">
+    <strong>Estado:</strong> <span id="state">INACTIVO</span><br>
+    <strong>Tiempo transcurrido:</strong> <span id="elapsed">0</span> s<br>
+    <strong>Peso actual:</strong> <span id="weight">0.000</span>
+  </div>
+
+<script>
+async function refresh(){
+  const r = await fetch('/latest');
+  if(!r.ok) return;
+  const j = await r.json();
+  let dec = (j.unit=="g"?1:3);
+  document.getElementById('state').innerText = j.monitoring ? "ACTIVO" : "INACTIVO";
+  document.getElementById('elapsed').innerText = j.elapsed;
+  document.getElementById('weight').innerText = j.weight.toFixed(dec) + " " + j.unit;
+}
+function start(){
+  const d=document.getElementById('duration').value;
+  const u=document.getElementById('unit').value;
+  fetch(`/start?duration=${d}&unit=${u}`);
+}
+function stop(){ fetch('/stop'); }
+setInterval(refresh,1000);
+</script>
+</body>
+</html>
+)rawliteral";
+
+// ===== Helpers =====
+String unitName(int u){ return (u==0)?"kg":(u==1)?"g":"lb"; }
+
+float convertUnitFromKg(float kg,int u){
+  if(u==0) return kg;
+  if(u==1) return kg*1000.0;   // gramos
+  return kg*2.20462;           // libras
+}
+
+// ===== Control =====
+void startMonitoring(unsigned long durationMs,int u){
+  if(SPIFFS.exists(csvPath)) SPIFFS.remove(csvPath);
+  File f=SPIFFS.open(csvPath, FILE_WRITE);
+  if(f){ f.println("elapsed_s,weight,unit"); f.close(); }
+  totalDurationMs=durationMs;
+  startMillis=millis();
+  lastSampleMillis=0;
+  monitoring=true;
+  latestWeight=0.0;
+  latestElapsedS=0;
+  unitSel=u;
+  Serial.printf("Monitoreo iniciado: dur=%lu ms, unidad=%d\n",durationMs,u);
+}
+void stopMonitoring(){ monitoring=false; Serial.println("Monitoreo detenido"); }
+
+// ===== HTTP handlers =====
+void handleRoot(){ server.send(200,"text/html",index_html); }
+void handleLatest(){
+  int dec = (unitSel==1?1:3); // gramos con 1 decimal, kg y lb con 3
+  String s="{";
+  s+="\"weight\":"+String(latestWeight,dec)+",";
+  s+="\"elapsed\":"+String(latestElapsedS)+",";
+  s+="\"unit\":\""+unitName(unitSel)+"\",";
+  s+="\"monitoring\":"+(monitoring?String("true"):String("false"));
+  s+="}";
+  server.send(200,"application/json",s);
+}
+void handleStart(){
+  int d=5,u=0;
+  if(server.hasArg("duration")) d=server.arg("duration").toInt();
+  if(server.hasArg("unit")) u=server.arg("unit").toInt();
+  if(d<=0) d=5; if(u<0||u>2) u=0;
+  startMonitoring((unsigned long)d*60000UL,u);
+  server.send(200,"text/plain","OK START");
+}
+void handleStop(){ stopMonitoring(); server.send(200,"text/plain","OK STOP"); }
+void handleDownload(){
+  if(!SPIFFS.exists(csvPath)){ server.send(404,"text/plain","No CSV"); return; }
+  File f=SPIFFS.open(csvPath, FILE_READ);
+  server.streamFile(f,"text/csv"); f.close();
+}
+
+// ===== Setup & Loop =====
+void setup(){
+  Serial.begin(115200); delay(500);
+  if(!SPIFFS.begin(true)) Serial.println("SPIFFS fail");
+  else Serial.println("SPIFFS listo");
+
+  scale.begin(HX_DT,HX_SCK);
+  scale.set_scale(FACTOR_CALIBRACION);
+  scale.tare();
+  Serial.println("HX711 listo");
+
+  WiFi.softAP(ssid,password);
+  Serial.print("AP: "); Serial.println(WiFi.softAPIP());
+
+  server.on("/",handleRoot);
+  server.on("/latest",handleLatest);
+  server.on("/start",handleStart);
+  server.on("/stop",handleStop);
+  server.on("/download",handleDownload);
+  server.begin();
+  Serial.println("Servidor HTTP listo");
+}
+
+void loop(){
+  server.handleClient();
+  if(monitoring){
+    unsigned long now=millis();
+    if(lastSampleMillis==0||(now-lastSampleMillis)>=sampleIntervalMs){
+      float kg=scale.get_units(5); // 5 lecturas promedio del HX711
+      float value=convertUnitFromKg(kg,unitSel);
+
+      latestWeight=value;
+      latestElapsedS=(now-startMillis)/1000UL;
+
+      // Guardar CSV con misma precisión
+      int dec = (unitSel==1?1:3);
+      File f=SPIFFS.open(csvPath, FILE_APPEND);
+      if(f){ f.printf("%lu,%.*f,%s\n", latestElapsedS, dec, latestWeight, unitName(unitSel).c_str()); f.close(); }
+
+      Serial.printf("t=%lus, peso=%.*f %s\n",
+        latestElapsedS,dec,latestWeight,unitName(unitSel).c_str());
+
+      lastSampleMillis=now;
+    }
+    if((now-startMillis)>=totalDurationMs){ stopMonitoring(); }
+  }
+}
